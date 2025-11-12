@@ -22,13 +22,13 @@ jobs:
       - name: 设置 Node.js 环境
         uses: actions/setup-node@v4
         with:
-          node-version: "latest"
+          node-version: "18"  # 使用稳定版本而非最新版
 
       - name: 安装依赖项
         run: |
           npm install -g javascript-obfuscator
 
-      - name: 下载 BPB worker.js（多源备用）
+      - name: 下载并验证 BPB worker.js
         run: |
           # 主要下载URL
           PRIMARY_URL="https://raw.githubusercontent.com/bia-pain-bache/BPB-Worker-Panel/main/build/unobfuscated-worker.js"
@@ -69,10 +69,41 @@ jobs:
           fi
           
           echo "下载完成，文件大小: $(wc -c < origin.js) 字节"
+          
+          # 验证文件内容
+          echo "验证文件内容..."
+          if head -n 1 origin.js | grep -q "<!DOCTYPE html>\|<html>\|404\|error"; then
+            echo "❌ 下载的是HTML错误页面，不是JavaScript文件"
+            echo "文件前几行内容:"
+            head -n 5 origin.js
+            exit 1
+          fi
+          
+          if ! head -n 1 origin.js | grep -q "javascript\|function\|const\|let\|var\|//"; then
+            echo "⚠️ 文件开头不是典型的JavaScript内容"
+            echo "文件前几行内容:"
+            head -n 5 origin.js
+          fi
+          
+          # 尝试简单语法检查
+          echo "进行基本语法检查..."
+          if node -c origin.js; then
+            echo "✅ 文件语法检查通过"
+          else
+            echo "❌ 文件语法检查失败"
+            echo "文件前20行内容:"
+            head -n 20 origin.js
+            exit 1
+          fi
 
       - name: 混淆 BPB worker.js
         run: |
-          javascript-obfuscator origin.js --output _worker.js \
+          echo "开始混淆过程..."
+          # 先备份原文件
+          cp origin.js origin_backup.js
+          
+          # 尝试混淆
+          if javascript-obfuscator origin.js --output _worker.js \
             --compact true \
             --control-flow-flattening false \
             --dead-code-injection false \
@@ -82,9 +113,25 @@ jobs:
             --string-array-encoding 'rc4' \
             --string-array-threshold 0.75 \
             --transform-object-keys true \
-            --unicode-escape-sequence true
-          
-          echo "混淆完成，输出文件大小: $(wc -c < _worker.js) 字节"
+            --unicode-escape-sequence true; then
+            echo "✅ 混淆成功完成"
+            echo "混淆后文件大小: $(wc -c < _worker.js) 字节"
+          else
+            echo "❌ 混淆失败，使用简化配置重试..."
+            # 使用更简单的配置重试
+            if javascript-obfuscator origin.js --output _worker.js \
+              --compact true \
+              --string-array true \
+              --string-array-encoding 'rc4' \
+              --string-array-threshold 0.75; then
+              echo "✅ 简化配置混淆成功"
+              echo "混淆后文件大小: $(wc -c < _worker.js) 字节"
+            else
+              echo "❌ 所有混淆尝试均失败，使用原始文件"
+              cp origin_backup.js _worker.js
+              echo "⚠️ 使用未混淆的原始文件作为 _worker.js"
+            fi
+          fi
 
       - name: 提交更改
         uses: stefanzweifel/git-auto-commit-action@v5
